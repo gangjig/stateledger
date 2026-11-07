@@ -174,6 +174,28 @@ python -m pytest
 
 Requires Python ≥ 3.10. No runtime dependencies.
 
+## Build your own
+
+This repository is small enough to regenerate from a prompt. Paste the
+following into an LLM and it should produce a closely similar project:
+
+> Write a small, zero-dependency Python library that gives a long-
+> running agent an explicit-state memory: a structured ledger with two
+> strictly separate layers instead of one growing notes blob. Evidence
+> (raw observations such as tool outputs and test results) is append-
+> only, deduplicated by content hash, and never rewritten; conclusions
+> (the agent's derived beliefs) each carry the ids of the evidence
+> supporting them, a confidence, and a lifecycle status, and are never
+> edited in place: when a belief stops being true it is superseded or
+> retracted through recorded transitions that link it to its
+> replacement, and retraction requires a reason plus supporting
+> evidence. A reconciler replays real-world outcomes into the ledger as
+> this bookkeeping, so the full chain of what the agent believed, why,
+> and what it believed before stays walkable and auditable. When the
+> active conclusions are rendered into a prompt under a size budget,
+> whatever had to be left out is reported explicitly rather than dropped
+> silently.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Copyright (c) 2026 Gang Ji.
