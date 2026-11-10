@@ -40,6 +40,7 @@ def main() -> None:
     ev2 = ledger.add_evidence(
         "tool-output", content="GET https://api.example.com/v1/users -> 404",
         source="smoke-test", contradicts=[belief.id],
+        summary="v1 users endpoint now returns 404",
     )
     stale = ledger.find_stale()
     print(f"   {ev2.id}: {ev2.content}")
@@ -83,6 +84,11 @@ def main() -> None:
     print(f"   omitted conclusions: "
           f"{[(o.id, o.reason) for o in rendered.omitted_conclusions]}")
     print(f"   omitted evidence: {rendered.omitted_evidence_ids}")
+
+    print("\n6b. The same evidence, injected on demand in different forms")
+    for form in ("pointer", "summary", "full"):
+        r = render_context(ledger, max_chars=100_000, evidence_form=form)
+        print(f"   evidence_form={form:<8} -> {r.char_count} chars")
 
     OUT_DIR.mkdir(exist_ok=True)
     md_path = OUT_DIR / "ledger.md"

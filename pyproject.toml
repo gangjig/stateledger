@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stateledger"
-version = "0.1.0"
+version = "0.2.0"
 description = "Explicit-state memory for long-running agents: append-only evidence kept separate from conclusions with provenance, confidence, and a lifecycle"
 readme = "README.md"
 requires-python = ">=3.10"

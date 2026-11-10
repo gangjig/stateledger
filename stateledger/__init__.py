@@ -33,10 +33,17 @@ from .models import (
     TrailEntry,
 )
 from .reconciler import OutcomeResult, ReconcileReport, Reconciler, rewrite_from_outcomes
-from .render import OmittedItem, RenderResult, export_markdown, render_context
+from .render import (
+    EvidenceForm,
+    OmittedItem,
+    RenderResult,
+    evidence_form_text,
+    export_markdown,
+    render_context,
+)
 from .store import Ledger
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Ledger",
@@ -54,6 +61,8 @@ __all__ = [
     "render_context",
     "RenderResult",
     "OmittedItem",
+    "EvidenceForm",
+    "evidence_form_text",
     "LedgerError",
     "ValidationError",
     "UnknownEvidenceError",

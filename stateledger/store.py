@@ -104,17 +104,27 @@ class Ledger:
         source: str = "unknown",
         timestamp: Optional[float] = None,
         contradicts: Iterable[str] = (),
+        summary: Optional[str] = None,
     ) -> Evidence:
         """Record one observation. Append-only and deduped.
 
         If an evidence item with the same content hash already exists,
         the existing item is returned and nothing is stored (a retried
         tool call must not double-count as two observations).
+
+        ``summary`` is an optional one-line summary of the observation,
+        used as the cheap rendering form of this evidence (see
+        ``render_context``'s ``evidence_form``). It is a representation,
+        not part of the observation: it does not enter the content hash,
+        so the same observation recorded twice with different summaries
+        still dedupes to the first record.
         """
         if not kind or not kind.strip():
             raise ValidationError("evidence kind must be a non-empty string")
         if (content is None or content == "") and (ref is None or ref == ""):
             raise ValidationError("evidence needs a content payload or a ref")
+        if summary is not None and not summary.strip():
+            raise ValidationError("evidence summary must be non-empty when given")
         digest = compute_content_hash(kind, content, ref)
         existing_id = self._evidence_by_hash.get(digest)
         if existing_id is not None:
@@ -130,6 +140,7 @@ class Ledger:
             timestamp=float(timestamp) if timestamp is not None else self._now(),
             hash=digest,
             contradicts=tuple(contradicts),
+            summary=summary,
         )
         self._evidence[ev.id] = ev
         self._evidence_by_hash[digest] = ev.id
@@ -410,6 +421,7 @@ class Ledger:
                     "timestamp": e.timestamp,
                     "hash": e.hash,
                     "contradicts": list(e.contradicts),
+                    "summary": e.summary,
                 }
                 for e in self._evidence.values()
             ],
@@ -449,6 +461,9 @@ class Ledger:
                 timestamp=e["timestamp"],
                 hash=e["hash"],
                 contradicts=tuple(e.get("contradicts", [])),
+                # Ledgers saved before evidence summaries existed have
+                # no "summary" key; they load with summary=None.
+                summary=e.get("summary"),
             )
             ledger._evidence[ev.id] = ev
             ledger._evidence_by_hash[ev.hash] = ev.id

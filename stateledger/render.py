@@ -10,19 +10,86 @@ Two output shapes:
   each with short evidence pointers. Anything that does not fit is
   *reported* in the result, never silently dropped: an agent that
   cannot see part of its state should at least know that it cannot.
+
+Evidence is stored once but can be *rendered* in several forms (see
+``EvidenceForm``): a bare pointer, a one-line summary, an excerpt, or
+the full text. ``render_context`` picks the form per call — or, with
+``EvidenceForm.AUTO``, per item: the richest form that still fits the
+remaining budget. The same observation can therefore cost a handful of
+characters in a tight prompt and its full text in a roomy one, instead
+of every caller paying for one fixed representation.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
-from .models import ConclusionStatus
+from .models import ConclusionStatus, Evidence
 from .store import Ledger
 
 _SNIPPET_CHARS = 80
+_EXCERPT_CHARS = 400
+
+
+class EvidenceForm(str, Enum):
+    """How much of an evidence item a rendering includes.
+
+    POINTER — id and kind only; the reader knows the observation
+        exists and can fetch it, but sees none of its payload.
+    SUMMARY — the summary recorded with the evidence, or (when none
+        was recorded) a one-line snippet of the content.
+    EXCERPT — the content with whitespace collapsed, truncated to
+        ``_EXCERPT_CHARS`` characters.
+    FULL — the entire inline content, verbatim. Ref-only evidence has
+        no inline payload, so FULL renders its ref pointer.
+    AUTO — not a form itself: ``render_context`` resolves it per item
+        to the richest of FULL / EXCERPT / SUMMARY that fits the
+        remaining budget, and reports the item as omitted when not
+        even SUMMARY fits.
+    """
+
+    POINTER = "pointer"
+    SUMMARY = "summary"
+    EXCERPT = "excerpt"
+    FULL = "full"
+    AUTO = "auto"
+
+
+# Richest-first order AUTO degrades through.
+_FORM_RICHEST_FIRST = (EvidenceForm.FULL, EvidenceForm.EXCERPT, EvidenceForm.SUMMARY)
+
+
+def evidence_form_text(ev: Evidence, form: Union[EvidenceForm, str]) -> str:
+    """The payload text of one evidence item in one concrete form.
+
+    ``form`` must be a concrete form (POINTER, SUMMARY, EXCERPT or
+    FULL); AUTO is a per-render policy, not a form, and is rejected.
+    POINTER returns an empty string: the pointer is the id/kind framing
+    the caller adds, with no payload at all.
+    """
+    form = EvidenceForm(form)
+    if form is EvidenceForm.AUTO:
+        raise ValueError("AUTO is a render policy, not a form; "
+                         "resolve it against a budget first")
+    if form is EvidenceForm.POINTER:
+        return ""
+    if form is EvidenceForm.SUMMARY:
+        if ev.summary:
+            return " ".join(ev.summary.split())
+        return _snippet(ev.content, ev.ref)
+    if ev.content is None:
+        # Ref-only evidence: no inline payload exists at any form.
+        return f"ref: {ev.ref}" if ev.ref else ""
+    if form is EvidenceForm.EXCERPT:
+        body = " ".join(ev.content.split())
+        if len(body) > _EXCERPT_CHARS:
+            body = body[: _EXCERPT_CHARS - 1] + "…"
+        return body
+    return ev.content  # FULL: verbatim
 
 
 def _ts(epoch: float) -> str:
@@ -60,6 +127,8 @@ def export_markdown(ledger: Ledger, path: Optional[str | Path] = None) -> str:
         body = _snippet(ev.content, ev.ref)
         if body:
             lines.append(f"  - {body}")
+        if ev.summary:
+            lines.append(f"  - summary: {' '.join(ev.summary.split())}")
         if ev.contradicts:
             lines.append(
                 f"  - contradicts: {', '.join(ev.contradicts)}"
@@ -144,18 +213,39 @@ def _conclusion_block(ledger: Ledger, conclusion) -> str:
     )
 
 
-def render_context(ledger: Ledger, max_chars: int = 4000) -> RenderResult:
+def _evidence_line(ev: Evidence, form: EvidenceForm) -> str:
+    payload = evidence_form_text(ev, form)
+    if payload:
+        return f"- {ev.id} · {ev.kind} · {payload}\n"
+    return f"- {ev.id} · {ev.kind}\n"
+
+
+def render_context(
+    ledger: Ledger,
+    max_chars: int = 4000,
+    evidence_form: Union[EvidenceForm, str] = EvidenceForm.SUMMARY,
+) -> RenderResult:
     """Render a prompt-ready state summary within ``max_chars``.
 
     Layout: active conclusions first, highest confidence first (ties
     broken by creation order), each with short evidence pointers; then,
-    with whatever budget remains, the most recent evidence as one-line
-    snippets. Greedy and deterministic: an item is included only if it
-    fits whole. Everything left out is listed in the result with a
-    reason — omission is reported, never silent.
+    with whatever budget remains, the most recent evidence not already
+    pointed at, rendered in ``evidence_form``. Greedy and
+    deterministic: an item is included only if it fits whole.
+    Everything left out is listed in the result with a reason —
+    omission is reported, never silent.
+
+    ``evidence_form`` selects how much of each evidence item is
+    injected (see ``EvidenceForm``). The default, SUMMARY, matches the
+    historical one-line-snippet behaviour, except that an item with a
+    recorded summary renders that summary instead of a raw snippet.
+    AUTO resolves per item to the richest form that fits the budget
+    left at that point, so early (newer) items get more room than
+    later ones — evidence on demand, priced by the budget.
     """
     if max_chars <= 0:
         raise ValueError("max_chars must be positive")
+    form = EvidenceForm(evidence_form)
 
     result = RenderResult(text="")
     parts: list[str] = [_HEADER]
@@ -185,11 +275,23 @@ def render_context(ledger: Ledger, max_chars: int = 4000) -> RenderResult:
     for ev in reversed(ledger.all_evidence()):  # newest first
         if ev.id in referenced:
             continue  # already pointed at from a conclusion
-        line = f"- {ev.id} · {ev.kind} · {_snippet(ev.content, ev.ref)}\n"
         header_cost = 0
         if not evidence_section_open:
             header_cost = len("\n### Recent evidence\n")
-        if used + header_cost + len(line) <= max_chars:
+        if form is EvidenceForm.AUTO:
+            # Richest form that fits wins; if not even SUMMARY fits,
+            # the item is omitted (and reported) rather than shrunk
+            # below its cheapest meaningful form.
+            line = None
+            for candidate in _FORM_RICHEST_FIRST:
+                attempt = _evidence_line(ev, candidate)
+                if used + header_cost + len(attempt) <= max_chars:
+                    line = attempt
+                    break
+        else:
+            attempt = _evidence_line(ev, form)
+            line = attempt if used + header_cost + len(attempt) <= max_chars else None
+        if line is not None:
             if not evidence_section_open:
                 parts.append("\n### Recent evidence\n")
                 used += header_cost

@@ -6,7 +6,11 @@ things and are stored differently.
 * Evidence is a raw observation (a tool output, a file reference, a test
   result). Evidence is append-only: once recorded it is never edited or
   deleted. It carries a content hash so the same observation recorded
-  twice is stored once.
+  twice is stored once. An observation may also carry a short
+  ``summary`` written at record time, so the renderer can later pick
+  between several *forms* of the same evidence (pointer, summary,
+  excerpt, full text) instead of injecting one fixed representation —
+  see ``stateledger.render.EvidenceForm``.
 * A Conclusion is a derived belief: a statement plus the ids of the
   evidence that supports it, a confidence, and a lifecycle status
   (active / superseded / retracted). Conclusions are immutable value
@@ -59,6 +63,12 @@ class Evidence:
     # Ids of conclusions this evidence contradicts, if known at record
     # time. Used by the stale-conclusion finder (see Ledger.find_stale).
     contradicts: tuple[str, ...] = ()
+    # Optional one-line summary of the observation, written by whoever
+    # recorded it. It is a *rendering form* of the evidence, not part of
+    # the observation itself: like source and timestamp it is excluded
+    # from the content hash, so re-recording the same observation with a
+    # different summary still dedupes to the first record.
+    summary: str | None = None
 
 
 @dataclass(frozen=True)

@@ -27,6 +27,15 @@ target was wrong, here's the log") are replayed into the ledger as
 supersede/retract bookkeeping — deterministic, auditable, and safe to
 run in batch.
 
+Evidence is stored once but **rendered on demand**: an observation can
+carry a one-line `summary` recorded with it, and `render_context`
+injects each evidence item in the form the caller asks for — `pointer`
+(id + kind only), `summary`, `excerpt`, or `full` — or, with `auto`,
+the richest form that still fits the remaining character budget. The
+same observation costs a handful of characters in a tight prompt and
+its full text in a roomy one, instead of every prompt paying for one
+fixed representation.
+
 Pure Python, zero dependencies.
 
 ## Quickstart
@@ -99,6 +108,7 @@ source        "smoke-test"            status         active | superseded | retra
 timestamp                             supersedes     c_0000  (what it replaced)
 hash          sha256(kind+payload)    superseded_by  c_0007  (what replaced it)
 contradicts   (c_0000,)               retraction_reason / retraction_evidence_ids
+summary       "v1 is gone" (optional)
       |                                        |
       +--- evidence is append-only             +--- conclusions are immutable:
            and deduped by hash                      status transitions only,
@@ -119,18 +129,24 @@ contradicts   (c_0000,)               retraction_reason / retraction_evidence_id
 4. **Omission is reported, never silent.** `render_context` fits
    conclusions into a character budget greedily and returns exactly
    which conclusions and evidence were left out, and why.
+5. **Storage and rendering are separate decisions.** An observation is
+   stored once, in full; how much of it enters a prompt — pointer,
+   summary, excerpt, or full text — is chosen at render time, per
+   render or (with `auto`) per item against the remaining budget. A
+   summary is a rendering form, never a replacement for the stored
+   observation, and it does not affect dedupe.
 
 ## Main APIs
 
 | Area | Call |
 | --- | --- |
-| Evidence | `add_evidence(kind, content=… \| ref=…, source=…)`, `all_evidence()` |
+| Evidence | `add_evidence(kind, content=… \| ref=…, source=…, summary=…)`, `all_evidence()` |
 | Conclusions | `add_conclusion(statement, evidence_ids, confidence)` |
 | Lifecycle | `supersede_conclusion(old_id, statement, evidence_ids, confidence)`, `retract_conclusion(id, reason, evidence_ids)` |
 | Queries | `active_conclusions()`, `conclusions_for_evidence(id)`, `evidence_trail(id)`, `find_stale(max_evidence_age_seconds=…)` |
 | Reconciler | `Reconciler(ledger).apply_outcome(record)`, `rewrite_from_outcomes(ledger, records)` |
 | Persistence | `ledger.save(path)` (atomic), `Ledger.load(path)`, `to_dict()` / `from_dict()` |
-| Rendering | `export_markdown(ledger, path=None)`, `render_context(ledger, max_chars=4000)` |
+| Rendering | `export_markdown(ledger, path=None)`, `render_context(ledger, max_chars=4000, evidence_form=…)`, `evidence_form_text(ev, form)` |
 
 **Stale rule** (deliberately simple, deterministic): an active
 conclusion is stale if some evidence lists it in its `contradicts`
@@ -163,6 +179,12 @@ survive a save/load round-trip.
   query engine. State bigger than memory needs a different backend.
 - **Character budgets are approximate.** `render_context` budgets in
   characters, not tokens; treat chars ≈ 4× tokens as a rough guide.
+- **Form selection is budget-driven, not semantic.** `auto` picks the
+  richest form that fits; it does not judge which form a question
+  actually needs. Callers who know ("this prompt needs the raw log")
+  should pass a concrete form. Summaries are only as good as whoever
+  recorded them — the ledger stores them verbatim and never generates
+  or verifies them.
 
 ## Development
 
@@ -191,8 +213,12 @@ following into an LLM and it should produce a closely similar project:
 > replacement, and retraction requires a reason plus supporting
 > evidence. A reconciler replays real-world outcomes into the ledger as
 > this bookkeeping, so the full chain of what the agent believed, why,
-> and what it believed before stays walkable and auditable. When the
-> active conclusions are rendered into a prompt under a size budget,
+> and what it believed before stays walkable and auditable. Evidence is
+> stored once but rendered on demand: an observation may carry a
+> one-line summary recorded with it, and rendering can inject each item
+> as a bare pointer, its summary, an excerpt, or its full text — or
+> automatically the richest form that fits the remaining budget. When
+> the active conclusions are rendered into a prompt under a size budget,
 > whatever had to be left out is reported explicitly rather than dropped
 > silently.
 
