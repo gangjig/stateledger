@@ -63,6 +63,23 @@ class EvidenceForm(str, Enum):
 _FORM_RICHEST_FIRST = (EvidenceForm.FULL, EvidenceForm.EXCERPT, EvidenceForm.SUMMARY)
 
 
+def _error_note_suffix(ev: Evidence) -> str:
+    """The error-note suffix for payload-bearing forms, or "".
+
+    A failed step's note travels with the observation at every form,
+    and is appended *after* any truncation, so compressing a history
+    for handoff can never silently drop the fact that the step failed
+    (or what the correct value was).
+    """
+    note = ev.error_note
+    if note is None:
+        return ""
+    parts = [" ".join(note.what_went_wrong.split())]
+    if note.correct_value:
+        parts.append(f"correct value: {' '.join(note.correct_value.split())}")
+    return " [error noted: " + "; ".join(parts) + "]"
+
+
 def evidence_form_text(ev: Evidence, form: Union[EvidenceForm, str]) -> str:
     """The payload text of one evidence item in one concrete form.
 
@@ -79,17 +96,18 @@ def evidence_form_text(ev: Evidence, form: Union[EvidenceForm, str]) -> str:
         return ""
     if form is EvidenceForm.SUMMARY:
         if ev.summary:
-            return " ".join(ev.summary.split())
-        return _snippet(ev.content, ev.ref)
+            return " ".join(ev.summary.split()) + _error_note_suffix(ev)
+        return _snippet(ev.content, ev.ref) + _error_note_suffix(ev)
     if ev.content is None:
         # Ref-only evidence: no inline payload exists at any form.
-        return f"ref: {ev.ref}" if ev.ref else ""
+        base = f"ref: {ev.ref}" if ev.ref else ""
+        return base + _error_note_suffix(ev)
     if form is EvidenceForm.EXCERPT:
         body = " ".join(ev.content.split())
         if len(body) > _EXCERPT_CHARS:
             body = body[: _EXCERPT_CHARS - 1] + "…"
-        return body
-    return ev.content  # FULL: verbatim
+        return body + _error_note_suffix(ev)
+    return ev.content + _error_note_suffix(ev)  # FULL: verbatim + note
 
 
 def _ts(epoch: float) -> str:
@@ -129,6 +147,12 @@ def export_markdown(ledger: Ledger, path: Optional[str | Path] = None) -> str:
             lines.append(f"  - {body}")
         if ev.summary:
             lines.append(f"  - summary: {' '.join(ev.summary.split())}")
+        if ev.error_note:
+            note = ev.error_note
+            line = f"  - error noted: {' '.join(note.what_went_wrong.split())}"
+            if note.correct_value:
+                line += f"; correct value: {' '.join(note.correct_value.split())}"
+            lines.append(line)
         if ev.contradicts:
             lines.append(
                 f"  - contradicts: {', '.join(ev.contradicts)}"
@@ -217,6 +241,11 @@ def _evidence_line(ev: Evidence, form: EvidenceForm) -> str:
     payload = evidence_form_text(ev, form)
     if payload:
         return f"- {ev.id} · {ev.kind} · {payload}\n"
+    if ev.error_note is not None:
+        # POINTER carries no payload, but a failed step must still be
+        # flagged: the reader knows an error note exists and can fetch
+        # the observation to read it.
+        return f"- {ev.id} · {ev.kind} · [error noted]\n"
     return f"- {ev.id} · {ev.kind}\n"
 
 

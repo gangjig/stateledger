@@ -19,6 +19,13 @@ Design rules enforced here:
 3. You cannot retract a conclusion without a reason and supporting
    evidence, and you cannot supersede one silently — the link is kept
    in both directions, so the full provenance trail stays walkable.
+4. A failed step is never rewritten to look completed. The error stays
+   recorded as evidence, and the only permitted addition is a
+   write-once truthful note beside it (``Ledger.annotate_error``)
+   saying what went wrong and, when known, the correct value.
+   Rendering carries the note with the observation at every form, so
+   compressing a history for handoff cannot silently drop the fact
+   that a step failed.
 """
 
 from __future__ import annotations
@@ -40,6 +47,7 @@ from .errors import (
 from .models import (
     Conclusion,
     ConclusionStatus,
+    ErrorAnnotation,
     Evidence,
     ProvenanceTrail,
     StaleFinding,
@@ -92,6 +100,16 @@ class Ledger:
             raise ValidationError(f"confidence must be within 0..1, got {confidence!r}")
         return c
 
+    @staticmethod
+    def _check_error_note(note: ErrorAnnotation) -> ErrorAnnotation:
+        if not note.what_went_wrong or not note.what_went_wrong.strip():
+            raise ValidationError("error note must say what went wrong")
+        if note.correct_value is not None and not note.correct_value.strip():
+            raise ValidationError(
+                "error note correct_value must be non-empty when given"
+            )
+        return note
+
     # ------------------------------------------------------------------
     # evidence
     # ------------------------------------------------------------------
@@ -105,6 +123,7 @@ class Ledger:
         timestamp: Optional[float] = None,
         contradicts: Iterable[str] = (),
         summary: Optional[str] = None,
+        error_note: Optional[ErrorAnnotation] = None,
     ) -> Evidence:
         """Record one observation. Append-only and deduped.
 
@@ -118,6 +137,15 @@ class Ledger:
         not part of the observation: it does not enter the content hash,
         so the same observation recorded twice with different summaries
         still dedupes to the first record.
+
+        ``error_note`` is an optional truthful annotation for an
+        observation that records a failed step: what went wrong and,
+        when known, the correct value. Like ``summary`` it is additive
+        metadata excluded from the content hash, so it does not affect
+        dedupe — and like ``summary``, when the observation dedupes to
+        an existing record, the first record (and its note, if any)
+        wins. To annotate an already-recorded observation, use
+        ``annotate_error``.
         """
         if not kind or not kind.strip():
             raise ValidationError("evidence kind must be a non-empty string")
@@ -125,6 +153,10 @@ class Ledger:
             raise ValidationError("evidence needs a content payload or a ref")
         if summary is not None and not summary.strip():
             raise ValidationError("evidence summary must be non-empty when given")
+        if error_note is not None:
+            self._check_error_note(error_note)
+            if error_note.annotated_at == 0.0:
+                error_note = replace(error_note, annotated_at=self._now())
         digest = compute_content_hash(kind, content, ref)
         existing_id = self._evidence_by_hash.get(digest)
         if existing_id is not None:
@@ -141,11 +173,50 @@ class Ledger:
             hash=digest,
             contradicts=tuple(contradicts),
             summary=summary,
+            error_note=error_note,
         )
         self._evidence[ev.id] = ev
         self._evidence_by_hash[digest] = ev.id
         self._log("evidence_added", evidence_id=ev.id, kind=kind)
         return ev
+
+    def annotate_error(
+        self,
+        evidence_id: str,
+        what_went_wrong: str,
+        correct_value: Optional[str] = None,
+    ) -> Evidence:
+        """Attach a write-once truthful note to a preserved error.
+
+        The observation itself is never altered: the stored record is
+        swapped for a copy that carries the note as additive metadata
+        (the same swap pattern as conclusion status transitions), so an
+        ``Evidence`` object fetched earlier still shows the state it
+        had. The observation's kind, content, ref and hash are
+        untouched, and the annotation is recorded in the audit log.
+
+        The note is write-once. A second annotation is refused: if the
+        first note was itself wrong, that is a new observation, not an
+        edit to this one. There is deliberately no API that rewrites
+        a failed step to look completed.
+        """
+        ev = self.get_evidence(evidence_id)
+        if ev.error_note is not None:
+            raise InvalidTransitionError(
+                f"evidence {evidence_id} already has an error note; "
+                "record new evidence instead of re-annotating"
+            )
+        note = self._check_error_note(
+            ErrorAnnotation(
+                what_went_wrong=what_went_wrong,
+                correct_value=correct_value,
+                annotated_at=self._now(),
+            )
+        )
+        updated = replace(ev, error_note=note)
+        self._evidence[evidence_id] = updated
+        self._log("evidence_error_noted", evidence_id=evidence_id)
+        return updated
 
     def get_evidence(self, evidence_id: str) -> Evidence:
         try:
@@ -422,6 +493,15 @@ class Ledger:
                     "hash": e.hash,
                     "contradicts": list(e.contradicts),
                     "summary": e.summary,
+                    "error_note": (
+                        {
+                            "what_went_wrong": e.error_note.what_went_wrong,
+                            "correct_value": e.error_note.correct_value,
+                            "annotated_at": e.error_note.annotated_at,
+                        }
+                        if e.error_note is not None
+                        else None
+                    ),
                 }
                 for e in self._evidence.values()
             ],
@@ -452,6 +532,16 @@ class Ledger:
             )
         ledger = cls(now_fn=now_fn)
         for e in data["evidence"]:
+            note_data = e.get("error_note")
+            error_note = (
+                ErrorAnnotation(
+                    what_went_wrong=note_data["what_went_wrong"],
+                    correct_value=note_data.get("correct_value"),
+                    annotated_at=note_data.get("annotated_at", 0.0),
+                )
+                if note_data is not None
+                else None
+            )
             ev = Evidence(
                 id=e["id"],
                 kind=e["kind"],
@@ -464,6 +554,9 @@ class Ledger:
                 # Ledgers saved before evidence summaries existed have
                 # no "summary" key; they load with summary=None.
                 summary=e.get("summary"),
+                # Likewise, ledgers saved before error notes existed
+                # have no "error_note" key; they load with None.
+                error_note=error_note,
             )
             ledger._evidence[ev.id] = ev
             ledger._evidence_by_hash[ev.hash] = ev.id

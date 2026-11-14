@@ -36,6 +36,18 @@ same observation costs a handful of characters in a tight prompt and
 its full text in a roomy one, instead of every prompt paying for one
 fixed representation.
 
+A failed step is **never rewritten to look completed**: the error stays
+recorded as evidence, and the only permitted addition is a write-once
+truthful note beside it — what went wrong and, when known, the correct
+value — which rendering carries with the observation at every form, so
+a compressed handoff cannot silently drop the fact that the step
+failed. This is the finding of Pakhomov et al., [_Cleaning an Agent's
+History Hurts When the World Still Holds the
+Error_](https://arxiv.org/abs/2611.14654) (arXiv:2611.14654): a
+truthful note beside the preserved error raised recovery from 51% to
+66%, while rewriting the step to look completed dropped it from 50% to
+44%.
+
 Pure Python, zero dependencies.
 
 ## Quickstart
@@ -109,6 +121,7 @@ timestamp                             supersedes     c_0000  (what it replaced)
 hash          sha256(kind+payload)    superseded_by  c_0007  (what replaced it)
 contradicts   (c_0000,)               retraction_reason / retraction_evidence_ids
 summary       "v1 is gone" (optional)
+error_note    "qty was 5; correct 50" (optional, write-once)
       |                                        |
       +--- evidence is append-only             +--- conclusions are immutable:
            and deduped by hash                      status transitions only,
@@ -135,12 +148,20 @@ summary       "v1 is gone" (optional)
    render or (with `auto`) per item against the remaining budget. A
    summary is a rendering form, never a replacement for the stored
    observation, and it does not affect dedupe.
+6. **A failed step is never rewritten to look completed.** The error
+   stays recorded as evidence. The only permitted addition is a
+   write-once truthful note beside it (`annotate_error`) saying what
+   went wrong and, when known, the correct value — and rendering
+   carries the note with the observation at every form, appended
+   after any truncation, so a compressed handoff cannot silently drop
+   the fact that a step failed. Motivated by
+   [arXiv:2611.14654](https://arxiv.org/abs/2611.14654).
 
 ## Main APIs
 
 | Area | Call |
 | --- | --- |
-| Evidence | `add_evidence(kind, content=… \| ref=…, source=…, summary=…)`, `all_evidence()` |
+| Evidence | `add_evidence(kind, content=… \| ref=…, source=…, summary=…, error_note=…)`, `annotate_error(id, what_went_wrong, correct_value=…)`, `all_evidence()` |
 | Conclusions | `add_conclusion(statement, evidence_ids, confidence)` |
 | Lifecycle | `supersede_conclusion(old_id, statement, evidence_ids, confidence)`, `retract_conclusion(id, reason, evidence_ids)` |
 | Queries | `active_conclusions()`, `conclusions_for_evidence(id)`, `evidence_trail(id)`, `find_stale(max_evidence_age_seconds=…)` |
@@ -185,6 +206,11 @@ survive a save/load round-trip.
   should pass a concrete form. Summaries are only as good as whoever
   recorded them — the ledger stores them verbatim and never generates
   or verifies them.
+- **Error notes are only as truthful as whoever writes them.** The
+  ledger guarantees the note travels with the preserved error and
+  that the error itself is never rewritten — it cannot verify that
+  the note's "correct value" is actually correct. A wrong note is
+  itself a new observation, not an edit.
 
 ## Development
 
@@ -220,7 +246,11 @@ following into an LLM and it should produce a closely similar project:
 > automatically the richest form that fits the remaining budget. When
 > the active conclusions are rendered into a prompt under a size budget,
 > whatever had to be left out is reported explicitly rather than dropped
-> silently.
+> silently. A failed step is never rewritten to look completed: the
+> error stays recorded as evidence, and the only permitted addition is
+> a write-once truthful note beside it saying what went wrong and, when
+> known, the correct value, which rendering carries with the
+> observation at every form.
 
 ## License
 

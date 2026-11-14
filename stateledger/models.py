@@ -11,6 +11,13 @@ things and are stored differently.
   between several *forms* of the same evidence (pointer, summary,
   excerpt, full text) instead of injecting one fixed representation —
   see ``stateledger.render.EvidenceForm``.
+* An observation that records a failed step can carry an ``error_note``:
+  a short, truthful annotation saying what went wrong and, when known,
+  what the correct value is. The note sits *beside* the preserved
+  error — the observation itself is never rewritten to look completed.
+  It is additive metadata (excluded from the content hash, like
+  ``summary``) and write-once: attached at record time or later via
+  ``Ledger.annotate_error``, never edited afterwards.
 * A Conclusion is a derived belief: a statement plus the ids of the
   evidence that supports it, a confidence, and a lifecycle status
   (active / superseded / retracted). Conclusions are immutable value
@@ -50,6 +57,23 @@ def compute_content_hash(kind: str, content: str | None, ref: str | None) -> str
 
 
 @dataclass(frozen=True)
+class ErrorAnnotation:
+    """A truthful note beside a preserved error.
+
+    Records what went wrong and, when known, the correct value — the
+    annotation a later reader needs in order to recover from the
+    failed step instead of repeating it, or instead of believing the
+    step succeeded. It is additive metadata: it never alters the
+    observation it annotates, and it is excluded from the evidence
+    content hash (like ``summary``).
+    """
+
+    what_went_wrong: str
+    correct_value: str | None = None
+    annotated_at: float = 0.0
+
+
+@dataclass(frozen=True)
 class Evidence:
     """One raw observation. Append-only; never rewritten after creation."""
 
@@ -69,6 +93,11 @@ class Evidence:
     # from the content hash, so re-recording the same observation with a
     # different summary still dedupes to the first record.
     summary: str | None = None
+    # Optional truthful annotation for an observation that records a
+    # failed step (see ErrorAnnotation). Write-once: attached at record
+    # time or later via Ledger.annotate_error, never edited afterwards.
+    # Excluded from the content hash, like summary.
+    error_note: ErrorAnnotation | None = None
 
 
 @dataclass(frozen=True)
